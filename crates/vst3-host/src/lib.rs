@@ -1,6 +1,6 @@
 //! SoundCraft's VST3 plugin host.
 //!
-//! Scans the standard VST3 folders (plus `VST3_PATH`), loads `.vst3` bundles in-process and
+//! Scans the standard VST3 folders (or exactly `VST3_PATH` when set), loads `.vst3` bundles in-process and
 //! exposes each "Audio Module Class" as a [`soundcraft_dsp::Plugin`], so the mix engine treats
 //! third-party plugins exactly like the built-in ones. Plugin ids are `vst3:<class id hex>` (32
 //! upper-case hex digits of the component's class id); parameter ids are VST3 `ParamID`s as
@@ -176,7 +176,7 @@ mod api {
     pub fn shutdown() {}
 }
 
-/// Every plugin in the standard VST3 folders, `VST3_PATH` and folders added with
+/// Every plugin in the standard VST3 folders (or exactly `VST3_PATH` when set) and folders added with
 /// [`add_search_dir`]. Scanned on first call (loads each binary and reads its factory, but
 /// creates no plugin instances), then cached in memory.
 pub fn scan() -> Vec<Vst3Descriptor> {

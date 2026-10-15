@@ -16,6 +16,23 @@ fn cargo(args: &[&str]) -> Result<(), String> {
     if st.success() { Ok(()) } else { Err(format!("cargo {} failed", args.join(" "))) }
 }
 
+/// `cargo` with plugin scanning pointed at an empty folder, so a test run finds no installed
+/// plugins. Scanning loads every bundle it finds, and a single misbehaving third-party plugin can
+/// abort the process (a C++/Objective-C exception crossing FFI cannot be caught), which would
+/// otherwise make the suite pass or fail depending on what is installed on the machine.
+fn cargo_without_installed_plugins(args: &[&str]) -> Result<(), String> {
+    let dir = root().join("target").join("ci-empty-plugin-path");
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let st = Command::new(std::env::var("CARGO").unwrap_or_else(|_| "cargo".into()))
+        .args(args)
+        .current_dir(root())
+        .env("VST3_PATH", &dir)
+        .env("CLAP_PATH", &dir)
+        .status()
+        .map_err(|e| e.to_string())?;
+    if st.success() { Ok(()) } else { Err(format!("cargo {} failed", args.join(" "))) }
+}
+
 /// Layer table: crate name (minus `soundcraft-`) → layer. Apps and xtask are exempt.
 const LAYERS: &[(&str, u8)] = &[
     ("time", 0),
@@ -148,7 +165,7 @@ fn ci() -> Result<(), String> {
     let steps: Vec<(&str, Box<dyn Fn() -> Result<(), String>>)> = vec![
         ("fmt", Box::new(|| cargo(&["fmt", "--all", "--", "--check"]))),
         ("clippy", Box::new(|| cargo(&["clippy", "--workspace", "--all-targets", "--", "-D", "warnings"]))),
-        ("test", Box::new(|| cargo(&["test", "--workspace"]))),
+        ("test", Box::new(|| cargo_without_installed_plugins(&["test", "--workspace"]))),
         ("assets", Box::new(assets)),
         ("layers", Box::new(layers)),
         ("wasm", Box::new(wasm)),

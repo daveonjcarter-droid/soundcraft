@@ -2,6 +2,7 @@
 //! mapping VST3 sub-categories to SoundCraft categories.
 
 use soundcraft_dsp::Category;
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
 /// Directory recursion limit while scanning (vendors nest folders, never deeply).
@@ -33,19 +34,39 @@ impl Os {
     }
 }
 
-/// The standard VST3 search locations for this OS (existing or not), followed by every entry of
-/// the `VST3_PATH` environment variable.
+/// The VST3 search locations: exactly the folders named by `VST3_PATH` when it names at least
+/// one, otherwise this OS's standard locations.
+///
+/// `VST3_PATH` *replaces* the standard folders instead of adding to them, so a host -- or a test
+/// -- can scan a known set of plugins rather than whatever happens to be installed on the
+/// machine. Scanning loads every bundle it finds, and one misbehaving plugin can take the process
+/// down, so being able to exclude the system folders keeps test runs independent of the machine.
 pub fn default_search_paths() -> Vec<PathBuf> {
-    let mut v = os_search_paths(
+    search_paths(
         Os::current(),
+        std::env::var_os("VST3_PATH"),
         std::env::var_os("HOME").map(PathBuf::from),
         std::env::var_os("COMMONPROGRAMFILES").map(PathBuf::from),
         std::env::var_os("LOCALAPPDATA").map(PathBuf::from),
-    );
-    if let Some(cp) = std::env::var_os("VST3_PATH") {
-        v.extend(std::env::split_paths(&cp).filter(|p| !p.as_os_str().is_empty()));
+    )
+}
+
+/// [`default_search_paths`] with the environment passed in, so the override can be tested without
+/// mutating the process environment.
+pub fn search_paths(
+    os: Os,
+    vst3_path: Option<OsString>,
+    home: Option<PathBuf>,
+    common_program_files: Option<PathBuf>,
+    local_app_data: Option<PathBuf>,
+) -> Vec<PathBuf> {
+    if let Some(cp) = vst3_path {
+        let only: Vec<PathBuf> = std::env::split_paths(&cp).filter(|p| !p.as_os_str().is_empty()).collect();
+        if !only.is_empty() {
+            return only;
+        }
     }
-    v
+    os_search_paths(os, home, common_program_files, local_app_data)
 }
 
 /// The OS-specific standard locations, given the relevant environment values.
@@ -289,6 +310,26 @@ mod tests {
         std::fs::create_dir_all(d.join("Empty.vst3")).unwrap();
         assert_eq!(bundle_binary(&d.join("Empty.vst3")), None);
         let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn vst3_path_replaces_the_standard_locations_instead_of_adding_to_them() {
+        let home = Some(PathBuf::from("/Users/u"));
+        let standard = os_search_paths(Os::MacOs, home.clone(), None, None);
+
+        // One folder: that folder and nothing else, so a scan cannot reach installed plugins.
+        let one = std::env::join_paths([Path::new("/opt/fixtures")]).expect("join");
+        assert_eq!(search_paths(Os::MacOs, Some(one), home.clone(), None, None), vec![PathBuf::from("/opt/fixtures")]);
+
+        // Several folders keep their order.
+        let two = std::env::join_paths([Path::new("/a"), Path::new("/b")]).expect("join");
+        assert_eq!(search_paths(Os::MacOs, Some(two), home.clone(), None, None), vec![PathBuf::from("/a"), PathBuf::from("/b")]);
+
+        // Unset falls back to the standard locations.
+        assert_eq!(search_paths(Os::MacOs, None, home.clone(), None, None), standard);
+
+        // Set but naming no usable folder also falls back, rather than scanning nothing by accident.
+        assert_eq!(search_paths(Os::MacOs, Some(OsString::new()), home, None, None), standard);
     }
 
     #[test]

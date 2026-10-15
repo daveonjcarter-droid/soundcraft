@@ -1,6 +1,7 @@
 //! Finding CLAP plugins on disk (safe, pure `std::fs`) and mapping CLAP features to categories.
 
 use soundcraft_dsp::Category;
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
 /// Directory recursion limit while scanning (CLAP folders may be nested, never deeply).
@@ -10,18 +11,36 @@ const MAX_BUNDLES: usize = 4096;
 /// Upper bound on directory entries visited by one scan.
 const MAX_ENTRIES: usize = 100_000;
 
-/// The standard CLAP search locations for this OS (existing or not), followed by every entry
-/// of the `CLAP_PATH` environment variable.
+/// The CLAP search locations: exactly the folders named by `CLAP_PATH` when it names at least
+/// one, otherwise this OS's standard locations.
+///
+/// `CLAP_PATH` *replaces* the standard folders instead of adding to them, for the same reason as
+/// [`crate`]'s VST3 counterpart: scanning loads every bundle it finds, so excluding the system
+/// folders is what keeps a test run independent of the machine it runs on.
 pub fn default_search_paths() -> Vec<PathBuf> {
-    let mut v = os_search_paths(
+    search_paths(
+        std::env::var_os("CLAP_PATH"),
         std::env::var_os("HOME").map(PathBuf::from),
         std::env::var_os("COMMONPROGRAMFILES").map(PathBuf::from),
         std::env::var_os("LOCALAPPDATA").map(PathBuf::from),
-    );
-    if let Some(cp) = std::env::var_os("CLAP_PATH") {
-        v.extend(std::env::split_paths(&cp).filter(|p| !p.as_os_str().is_empty()));
+    )
+}
+
+/// [`default_search_paths`] with the environment passed in, so the override can be tested without
+/// mutating the process environment.
+pub fn search_paths(
+    clap_path: Option<OsString>,
+    home: Option<PathBuf>,
+    common_program_files: Option<PathBuf>,
+    local_app_data: Option<PathBuf>,
+) -> Vec<PathBuf> {
+    if let Some(cp) = clap_path {
+        let only: Vec<PathBuf> = std::env::split_paths(&cp).filter(|p| !p.as_os_str().is_empty()).collect();
+        if !only.is_empty() {
+            return only;
+        }
     }
-    v
+    os_search_paths(home, common_program_files, local_app_data)
 }
 
 /// The OS-specific standard locations, given the relevant environment values.
@@ -182,6 +201,26 @@ mod tests {
         std::fs::create_dir_all(d.join("Empty.clap")).unwrap();
         assert_eq!(bundle_executable(&d.join("Empty.clap")), None);
         let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn clap_path_replaces_the_standard_locations_instead_of_adding_to_them() {
+        let home = Some(PathBuf::from("/Users/u"));
+        let standard = os_search_paths(home.clone(), None, None);
+
+        // One folder: that folder and nothing else, so a scan cannot reach installed plugins.
+        let one = std::env::join_paths([Path::new("/opt/fixtures")]).expect("join");
+        assert_eq!(search_paths(Some(one), home.clone(), None, None), vec![PathBuf::from("/opt/fixtures")]);
+
+        // Several folders keep their order.
+        let two = std::env::join_paths([Path::new("/a"), Path::new("/b")]).expect("join");
+        assert_eq!(search_paths(Some(two), home.clone(), None, None), vec![PathBuf::from("/a"), PathBuf::from("/b")]);
+
+        // Unset falls back to the standard locations.
+        assert_eq!(search_paths(None, home.clone(), None, None), standard);
+
+        // Set but naming no usable folder also falls back.
+        assert_eq!(search_paths(Some(OsString::new()), home, None, None), standard);
     }
 
     #[test]
